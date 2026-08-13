@@ -1,10 +1,10 @@
-# bzminer v100.02b1 — public beta
+# bzminer v100.02b3 — public beta
 
 A GPU/CPU cryptocurrency miner with a live web dashboard, per-GPU overclocking,
 and thermal/power safety limits.
 
-Mines **Pearl**, **VERUS**, **Warthog** and **XELIS**, and ships **sha256d** as
-the open-source SDK example.
+Mines **Ergo**, **Pearl**, **VERUS**, **Warthog** and **XELIS**, and ships
+**sha256d** as the open-source SDK example.
 
 This is a **beta**. It has been validated against real pools and real hardware, but
 it is new — watch a rig before leaving it unattended.
@@ -13,14 +13,9 @@ it is new — watch a rig before leaving it unattended.
 
 | file | size | SHA-256 |
 |---|---|---|
-| `bzminer_v100.02b1_windows.zip` | 6.4 MB | `c9a7906f0c43b7686b70ffdbe03d791ba7de1452c776e9c8a1d87dc9965582e7` |
-| `bzminer_v100.02b1_windows_lite.zip` | 2.5 MB | `8a86ca27e5bcb3c2d435dd5cdc8261efe6a001e9777b8132f8b347675935b63d` |
-| `bzminer_v100.02b1_windows_plugins.zip` | 14.6 MB | `555f0be1929b06c28101b2057d45b058e332884d1a98eaddfa1b918cab280d36` |
-| `bzminer_v100.02b1_linux.tar.gz` | 7.5 MB | `fdac0b9f509c45eced537cfd8da52a6b5a0eace9334233097c1feb8376f76290` |
-| `bzminer_v100.02b1_linux_lite.tar.gz` | 3.6 MB | `e0f326a298f8757c7db46c5627458c4d60ba4ef13180057575e2327ac8b96c89` |
-| `bzminer_v100.02b1_linux_plugins.tar.gz` | 22.3 MB | `3891f7255b8e9bf89e4b36379fa23cea98df894df8964c22bbe74fe8d09b9133` |
-
-> **Not in this release:** macos — no binary was available when it was built.
+| `bzminer_v100.02b3_windows.zip` | 7.4 MB | `bf9e06f071597c0db9a7557dee9549fada8d8ca8cf18de444ddb3d2e6e956d7e` |
+| `bzminer_v100.02b3_linux.tar.gz` | 8.5 MB | `d16776d8967d820d2e3640e6dfda5b9ddae6f4f4403457518ecb82b7b8c867d1` |
+| `bzminer_v100.02b3_macos.tar.gz` | 7.9 MB | `4c5e0a9c0c8abd829a8dd477b863f1a4a2b1cef991fdd82cd4eeb2f1473d78a7` |
 
 Verify before running:
 
@@ -49,7 +44,8 @@ generated from the shipped binary, so it always matches the build you have.
 
 | algorithm | coin | dev fee | notes |
 |---|---|---|---|
-| `pearl` | Pearl | 2% | a zk proof-of-work: each share is a STARK proof, so it is far heavier per hash than a normal algorithm. Also mines SOLO - point -o at your node's RPC URL instead of a pool. Wallet addresses start with 'prl1'. |
+| `ergo` | Ergo | 1% | Autolykos v2. GPU only, and memory-hard: it builds a table of N 32-byte elements (about 2 GB) in VRAM, so a card needs the room for it. N grows with block height, and the table is rebuilt when it changes. Wallet addresses start with '9'. |
+| `pearl` | Pearl | 2% | a zk proof-of-work: each share is a STARK proof, so it is far heavier per hash than a normal algorithm. Also mines SOLO - point -p at your node's RPC URL instead of a pool. Wallet addresses start with 'prl1'. |
 | `sha256d` | — | none | The open-source SDK example: a full algorithm plugin (CPU+GPU, pool stratum, bench job source). Copy plugins/public/sha256d as a template for your own. |
 | `verus` | VERUS | 1% | VerusHash v2.2 CPU mining. A Verus R-address, optionally followed by .worker. |
 | `warthog` | Warthog | 2% | janushash - the GPU filters sha256t and the CPU runs verushash, on the same nonces. Needs BOTH a GPU and the CPU; one without the other finds nothing. Wallet addresses are 48 hex characters. |
@@ -59,7 +55,7 @@ generated from the shipped binary, so it always matches the build you have.
 
 | download | what it is |
 |---|---|
-| `bzminer_<ver>_<os>` | **Full.** All 15 plugins compiled in. One self-contained binary - take this one unless you know you want the other. |
+| `bzminer_<ver>_<os>` | **Full.** All 16 plugins compiled in. One self-contained binary - take this one unless you know you want the other. |
 | `bzminer_<ver>_<os>_lite` | **Lite.** No plugins compiled in; loads them from a `plugins/` folder beside it. Useless on its own - it needs the archive below. |
 | `bzminer_<ver>_<os>_plugins` | The drop-in plugins. Required by lite; a full user can also drop a newer one here to override the built-in copy. |
 
