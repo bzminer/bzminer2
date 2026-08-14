@@ -8,6 +8,14 @@ Mines **Ergo**, **Pearl**, **VERUS**, **Warthog** and **XELIS**, and ships
 One binary, no installer. It writes nothing outside its own folder except the log
 file and the config you point it at.
 
+**No CUDA toolkit, no OpenCL install.** Every NVIDIA architecture from the GTX
+1080 up ships a precompiled kernel, so the driver is all you need. Nothing is
+compiled on your machine and nothing is linked against a vendor SDK: CUDA,
+OpenCL and AMD's HIP are all opened at runtime *if they are present*, and a
+backend whose driver is missing is simply left out. An NVIDIA rig with no OpenCL
+installed loses nothing, and the build refuses to ship if any of those libraries
+creeps back into the import table.
+
 > **Public beta.** It mines, and it has been run against real pools on real
 > hardware — but it is new. Watch a rig before you leave it alone with it, and
 > please report what you find.
@@ -224,6 +232,12 @@ wants something in the thousands.
 The share count is what to trust. `shares × difficulty ÷ seconds` is a rate the
 miner cannot flatter — compare it against the displayed hashrate, and if the two
 disagree for long, one of them is lying.
+
+Each benchmark job is held for ten minutes by default so that a memory-hard
+kernel is not thrown away mid-batch every time the job refreshes, which would
+make fixed-difficulty share accounting read low. `--benchmark-job-interval <ms>`
+changes that; set it to something short, say `4000`, if what you actually want
+to exercise is how the miner copes with jobs going stale.
 
 Both modes honour everything else: `--nvidia` to test one vendor, `--oc-*` to
 measure at a given power limit, `-o log` for a scrolling log instead of the table.
@@ -566,6 +580,8 @@ Run modes:
   --bench, --test         Mine a local bench job (default sha256d; select with -a)
   --benchmark [diff]      Run a local stratum server and mine it over real TCP
                           (default algo xelis, difficulty 1000; e.g. --benchmark -a xelis)
+  --benchmark-job-interval <ms>  Keep each deterministic benchmark job this long
+                          (default 600000; use 4000 to stress stale-job handling)
   --no-watchdog           Run the worker in-process (no supervisor; debugging)
   -h, --help              Show this help, then exit
   -V, --version           Print version, then exit
@@ -644,9 +660,9 @@ Configuration:
   --plugin-update <mode>  Auto-download/update plugins: on | off | auto (lite=on, full=off)
   --plugin-manifest <url> Override the plugin manifest URL (beta channel / testing)
   --pool <spec>           Active pool(s) from the config: an index, or [0,2]; [] = monitor
-  --cu-kernel [algo=]<f>  Override a plugin's embedded CUDA kernel (.cubin/.ptx/.cu)
-  --cl-kernel [algo=]<f>  Override a plugin's embedded OpenCL kernel (.spv/.cl/.bin)
-                          (for debugging or third-party source plugins)
+  --cu-kernel [algo=]<f>  Override with an offline-compiled CUDA .cubin
+  --cl-kernel [algo=]<f>  Override with an OpenCL .spv or native .bin
+                          (source/PTX overrides are not accepted)
 
 Settings (set in config.txt, or with --set <path>=<value>):
   log.level                  Log verbosity: trace, network, debug, info, warn, or error (network = raw pool traffic)
@@ -669,6 +685,7 @@ Settings (set in config.txt, or with --set <path>=<value>):
   http_address               Web server bind address ("0.0.0.0" allows LAN access)
   http_port                  Web server TCP port
   save_effective             On startup, write the resolved config to config.effective.json
+  benchmark_job_interval_ms  How long --benchmark keeps one deterministic job, in ms. A persistent job makes fixed-difficulty share accounting honest for memory-hard kernels. CLI: --benchmark-job-interval
   log_table_interval         How often the 'log' output reprints the device/pool table, in ms. Separate from --interval, which is how often the engine PUBLISHES a snapshot (the web UI and metrics want that fast). 0 = print on every snapshot. CLI: --log-table-interval
   tui_interval               How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
   pool                       Active pool(s) from pools[]: an index (0 or "0"), an array ([0, 2] = multiple pools), or [] for monitoring mode. Omit = all pools (first primary, rest failover). CLI: --pool
@@ -773,6 +790,8 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
   "http_port": 4014,
   // On startup, write the resolved config to config.effective.json
   "save_effective": false,
+  // How long --benchmark keeps one deterministic job, in ms. A persistent job makes fixed-difficulty share accounting honest for memory-hard kernels. CLI: --benchmark-job-interval
+  "benchmark_job_interval_ms": 600000,
   // How often the 'log' output reprints the device/pool table, in ms. Separate from --interval, which is how often the engine PUBLISHES a snapshot (the web UI and metrics want that fast). 0 = print on every snapshot. CLI: --log-table-interval
   "log_table_interval": 30000,
   // How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
@@ -847,9 +866,11 @@ that matter. These are the ones worth knowing.
 | variable | what it does |
 |---|---|
 | `BZ_CPU_THREADS=<n>` | Cap CPU mining workers. Default is every logical processor — on Windows that means all processor groups, not just the 64 in the one the process started in |
-| `BZ_XELIS_THREADS=<n>` | The same, for xelis specifically |
+| `BZ_XELIS_THREADS=<n>` | The GPU thread budget for xelis. It is chosen from the device — 128 threads per compute unit on Ada and older (floor 8192, ceiling 16384), 256 per unit and no ceiling on Blackwell, which needs the larger launch. Setting this by hand is for tuning experiments |
+| `BZ_XELIS_BLOCK=32\|64\|128\|256` | The xelis CUDA launch block. Default 64, or 256 on a recognised GA100 mining card |
+| `BZ_XELIS_STREAMS=1\|2` | Force one launch slot, or force the two-slot schedule measured on GA100, onto another NVIDIA card. A/B testing knob |
 | `BZ_ZK_THREADS=<n>` | Worker cap for Pearl's ZK prover |
-| `BZ_NO_CPU=1`, `BZ_NO_CUDA=1`, `BZ_NO_OPENCL=1` | Skip a whole compute backend. Blunter than `--nvidia`/`--amd`/`--cpu`, and useful for isolating one device while benchmarking |
+| `BZ_NO_CPU=1`, `BZ_NO_CUDA=1`, `BZ_NO_OPENCL=1` | Skip a whole compute backend. Blunter than `--nvidia`/`--amd`/`--cpu`, and useful for isolating one device while benchmarking. `BZ_NO_OPENCL=1` also stops the OpenCL loader being opened at all |
 | `BZ_NO_MOUSE=1` | Do not ask the terminal for wheel events, so click-and-drag text selection keeps working. The keyboard still scrolls the log pane |
 | `BZ_WARTHOG_SHAVERUS=<H/s>` | Pin the candidate rate each Warthog GPU is asked for instead of letting the tuner find it. This is the modern equivalent of bzminer 1.x's `--warthog_verus_hr_target`, which maps onto it automatically |
 | `BZ_WARTHOG_SHA_QUALITY=<pct>` | Nudge Warthog's balance point without pinning it |
@@ -857,7 +878,6 @@ that matter. These are the ones worth knowing.
 | `BZ_WARTHOG_INCLUDE_INTEGRATED=1` | Mine on an integrated GPU that shares system memory beside a discrete card. Off by default because on a Ryzen APU it took nearly half the CPU's verus rate to contribute almost no sha |
 | `BZ_ERGO_INCLUDE_INTEGRATED=1` | The same for Ergo, where an integrated GPU also cannot size the 2 GB table safely |
 | `BZ_PEARL_HIP=0\|opencl\|force` | Pearl's AMD path: `0`/`opencl` force portable OpenCL, `force` fails rather than silently falling back |
-| `BZ_ZK_GPU=1` | Run Pearl's ZK commitment on the GPU. Off by default: it wins on some machines and loses on others, because holding a CUDA context costs host CPU elsewhere |
 | `BZ_POOL_PROBE_S=<n>` | Seconds between probes of a failed primary pool (minimum 5) |
 
 The full list, including the diagnostic ones, is in `docs/env-vars.txt` in the
@@ -902,6 +922,8 @@ device found and the pool being tried. Start there, then:
 | dashboard not reachable | it listens on `127.0.0.1` only unless you set `http_address` |
 | warthog finds nothing | it needs both a GPU and the CPU; check neither is disabled |
 | ergo skips a card | the ~2 GB table has to fit in VRAM alongside everything else on the card |
+| a message about MSR tweaks | CPU register tuning is an *optional* speed-up, not a requirement — mining carries on without it. On Windows it needs PawnIO (`scripts/install-pawnio.bat`); being an administrator is not by itself enough. On Linux it needs the `msr` module and access to `/dev/cpu/*/msr`. Run with `--log-level debug` to see which register was refused |
+| xelis hashrate lower than an older bzminer | xelis now publishes a rate it measures itself, where the older figure was derived and read high — the same card doing the *same* work reports a smaller number. Compare accepted shares over a fixed period instead; that is the same unit in both versions, and by that measure this build is faster |
 
 More detail: `--log-level debug`, or `--log-level network` for the raw pool
 conversation. The log file sits next to the binary and its name is printed at
