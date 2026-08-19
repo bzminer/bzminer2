@@ -11,10 +11,10 @@ file and the config you point it at.
 **No CUDA toolkit, no OpenCL install.** Every NVIDIA architecture from the GTX
 1080 up ships a precompiled kernel, so the driver is all you need. Nothing is
 compiled on your machine and nothing is linked against a vendor SDK: CUDA,
-OpenCL and AMD's HIP are all opened at runtime *if they are present*, and a
-backend whose driver is missing is simply left out. An NVIDIA rig with no OpenCL
-installed loses nothing, and the build refuses to ship if any of those libraries
-creeps back into the import table.
+OpenCL, AMD's HIP and Apple's Metal are all opened at runtime *if they are
+present*, and a backend whose driver is missing is simply left out. An NVIDIA rig
+with no OpenCL installed loses nothing, and the build refuses to ship if any of
+those libraries creeps back into the import table.
 
 > **Public beta.** It mines, and it has been run against real pools on real
 > hardware — but it is new. Watch a rig before you leave it alone with it, and
@@ -115,12 +115,16 @@ Which hardware each one uses:
 
 | algorithm | GPU | CPU |
 |---|---|---|
-| `ergo` | NVIDIA, AMD, Intel | — |
-| `xelis` | NVIDIA, AMD, Intel | yes |
+| `ergo` | NVIDIA, AMD, Intel, Apple | — |
+| `xelis` | NVIDIA, AMD, Intel, Apple | yes |
 | `pearl` | NVIDIA, AMD, Intel | yes |
-| `warthog` | NVIDIA, AMD, Intel | **required, with a GPU** |
+| `warthog` | NVIDIA, AMD, Intel, Apple | **required, with a GPU** |
 | `verus` | — | yes |
-| `sha256d` | NVIDIA, AMD, Intel | yes |
+| `sha256d` | NVIDIA, AMD, Intel, Apple | yes |
+
+"Apple" means an Apple Silicon GPU through Metal, on macOS. Pearl is the one
+exception: its GPU kernels need integer matrix hardware that Metal does not
+expose, so on a Mac it mines on the CPU.
 
 ### Mining each one
 
@@ -301,7 +305,27 @@ and the metric history want that fast) rather than how often a screen is redrawn
 --log-table-interval 30000   # 'log': reprint the device table every 30s (0 = every snapshot)
 --tui-interval 400           # 'tui': repaint the dashboard every 400ms
 --interval 1000              # the underlying data rate for all of them, and the web UI
+--hashrate-window 30         # seconds the reported hashrate averages over
 ```
+
+`--hashrate-window` is a different thing from the three above it: they decide how
+often a number is *drawn*, it decides what the number *is*. A GPU's hash counter
+advances one batch at a time, so an un-averaged rate reads 0, 0, 0, BURST, 0 - the
+window is what makes it a rate. Raise it for a calmer number on a bursty rig, lower
+it to see an intensity or thread change take effect sooner. The `avg` figure is
+unaffected; that is always since start.
+
+The mining table's **`cfg`** column says how each device is *configured*, as
+opposed to what it is doing: `i64` is a GPU at intensity 64, `i0` a GPU on auto,
+and `t16` a CPU mining on 16 threads. It is the quickest way to confirm a setting
+actually took.
+
+Under the summary row's **`pool hr`** is that rate as a percentage of the miner's
+own: **100%** means the pool is crediting exactly what your rig reports, below
+means it is finding fewer shares than its hashrate implies, above means luck has
+run your way. It is the number to watch if a miner looks fast but pays badly.
+Expect it to swing over minutes and settle over hours - it is computed from
+accepted shares, so a short run says very little.
 
 **Keys, on every screen:**
 
@@ -312,13 +336,19 @@ and the metric history want that fast) rather than how often a screen is redrawn
 | `c` | open the command line |
 | `q` | quit |
 
-On the `tui` dashboard the log pane also **scrolls**: mouse wheel, `Up`/`Down`,
+On the `tui` dashboard the log pane **scrolls**: the mouse wheel, `Up`/`Down`,
 `PageUp`/`PageDown`, `Home` and `End`. While you are scrolled up the pane holds
 still — new lines keep arriving behind it rather than dragging the text out from
 under you — and the bar says `held N up  [End] live` so a frozen pane is never
-mistaken for a stalled miner. `End` returns to following the newest line. If you
-would rather keep your terminal's own click-and-drag text selection, start bzminer
-with `BZ_NO_MOUSE=1` and use the keys.
+mistaken for a stalled miner. `End` returns to following the newest line.
+
+**Selecting and copying text keeps working too.** Scrolling and selecting are
+separate actions and bzminer does not take the mouse away from your terminal to get
+the wheel: on Windows the console's own quick-edit selection stays on, and
+elsewhere the terminal is asked to translate wheel ticks into key presses. So you
+can drag out a log line to paste into a bug report while the wheel still scrolls
+the pane. (`BZ_MOUSE=1` switches to full mouse reporting, which adds click events
+at the cost of drag-selection — you should not need it.)
 
 ### Commands
 
@@ -525,8 +555,41 @@ doing something else. Devices are addressed by the number in the table
 }
 ```
 
-`intensity: 0` is auto, which is usually right. The index counts **every** device
-enumerated, so disabling one does not renumber the others.
+**Intensity** is how much work one GPU launch is asked for, in units of 65536
+nonces, from `1` to `4096`. `0` is auto and means `64` — a ~4M-nonce launch, which
+is what every card used before this was configurable, so leaving it alone changes
+nothing. Raise it to keep a card busy for longer per launch; lower it to pick up a
+new job sooner, to keep a display responsive, or to shorten a launch that is
+tripping a driver watchdog. The current value is in the table's `cfg` column, and
+`intensity <n>` on the command line (`c`) changes every device live, with `0` to
+put them back on their configured values.
+
+The index counts **every** device enumerated, so disabling one does not renumber
+the others.
+
+### How much of the CPU mines
+
+**By default bzminer does not mine on every thread.** It holds back two processors
+on anything above 8 threads, and one from 4 up. A CPU miner runs every worker flat
+out, so mining all of them leaves the miner's own threads — the watchdog, the
+telemetry poll, the console, the pool sockets — fighting workers for a processor,
+and the machine feels frozen. On a small box it is worse than a feeling: a
+12-thread rig mining Warthog stopped answering SSH entirely, because `sshd` could
+not get scheduled either. The cost of holding two back is a percent or two; the
+benefit is a rig you can still log into.
+
+```bash
+--cpu_threads 12               # mine on 12 threads (bzminer 1.x's option, same meaning)
+--cpu_threads 0                # auto — the default described above
+--cpu_affinity 0-7,16,18       # mine on exactly these processors
+```
+
+`--cpu_affinity` **takes precedence** over `--cpu_threads`: it names the
+processors outright, so a count alongside it could only disagree. Whatever is left
+over — the processors not mining — is where the miner's own threads are pinned.
+Both are also config settings (`cpu_threads`, `cpu_affinity`).
+
+If you want every thread mining, ask for it: `--cpu_threads <all of them>`.
 
 Multi-socket machines are detected properly: bzminer reads the real topology —
 packages, cores, threads, NUMA nodes and cache layout — and prints it at startup.
@@ -580,6 +643,24 @@ Run modes:
   --bench, --test         Mine a local bench job (default sha256d; select with -a)
   --benchmark [diff]      Run a local stratum server and mine it over real TCP
                           (default algo xelis, difficulty 1000; e.g. --benchmark -a xelis)
+  --cpu-metrics <0|1>     Collect CPU telemetry (default 1; 0 skips the CPU sensors)
+  --tui-width <n>         Console width in characters (0 = follow the terminal)
+  --tui-height <n>        Console height in rows (0 = follow the terminal)
+  --hashrate-window <s>   Seconds the reported hashrate averages over (default 30;
+                          higher is steadier, lower reacts to a change sooner)
+  --disable_sse           Pretend this CPU has no SSE4.1/AES/PCLMUL, nor anything
+                          above it - for measuring the portable path
+  --disable_avx2          ... no AVX/AVX2 (so no VAES or AVX-512 either). This is
+                          how to measure the AVX2 path on a newer CPU
+  --disable_avx512        ... no AVX-512, and no AMX with it
+  --disable_vaes          ... no VAES/VPCLMULQDQ
+  --disable_amx           ... no AMX
+  --disable_huge_pages    Allocate with ordinary pages, to measure what huge pages
+                          are actually worth on this rig
+  --cpu_threads <n>       How many CPU threads mine (0 = auto, which leaves one or
+                          two for everything else so the machine stays usable)
+  --cpu_affinity <list>   Which processors mine: 0-7,16,18. Takes precedence over
+                          --cpu_threads; the rest run the miner's own threads
   --benchmark-job-interval <ms>  Keep each deterministic benchmark job this long
                           (default 600000; use 4000 to stress stale-job handling)
   --no-watchdog           Run the worker in-process (no supervisor; debugging)
@@ -649,7 +730,9 @@ Configuration:
   --set <path>=<value>    Override any setting below (e.g. --set http_port=8080)
   --<path> <value>        Same as --set, as a flag (dashes map to '_')
   --save-config           Write the resolved config to config.effective.json
-  -p, --url  <url>        Add a pool (starts a new pool entry)
+  -p, --pool, --url <url> Add a pool (starts a new pool entry). Repeat for backups:
+                          the first is the primary, the rest are rotated through
+                          on disconnection
   -w, --wallet <addr>     Payout wallet for the current pool
   --worker <name>         Worker/rig name (login sent to the pool: wallet.worker)
   -u, --user <user>       LEGACY combined login (use --wallet/--worker instead)
@@ -659,14 +742,16 @@ Configuration:
   --proxy <url>           Route all pools through a SOCKS5 proxy: socks5://[user:pass@]host:port
   --plugin-update <mode>  Auto-download/update plugins: on | off | auto (lite=on, full=off)
   --plugin-manifest <url> Override the plugin manifest URL (beta channel / testing)
-  --pool <spec>           Active pool(s) from the config: an index, or [0,2]; [] = monitor
+  --pool <index|[0,2]>    ...or, given a number instead of a URL, which configured
+                          pool(s) to activate; [] = monitoring mode
   --cu-kernel [algo=]<f>  Override with an offline-compiled CUDA .cubin
   --cl-kernel [algo=]<f>  Override with an OpenCL .spv or native .bin
                           (source/PTX overrides are not accepted)
 
 Settings (set in config.txt, or with --set <path>=<value>):
   log.level                  Log verbosity: trace, network, debug, info, warn, or error (network = raw pool traffic)
-  log.file                   Also write logs to this file (empty = console only)
+  log.file                   Write the log to this file instead of bzminer.worker.log. There is always a file log; this only changes its name/path
+  log.wire_max               Longest single field kept in a `network`-level wire log line, in characters. Stratum frames can carry very large opaque values - a Pearl share is a ~140 KB merkle proof - which bury the log; longer values are elided and a mostly-binary frame is summarized. 0 = no redaction. CLI: --log-wire-max
   network.timeout_ms         Pool / network socket timeout, in milliseconds
   network.reconnect_ms       Delay before reconnecting after a disconnect, in milliseconds
   network.proxy              Route all pool connections through a SOCKS5 proxy: socks5://[user:pass@]host:port (empty = direct). CLI: --proxy
@@ -685,20 +770,34 @@ Settings (set in config.txt, or with --set <path>=<value>):
   http_address               Web server bind address ("0.0.0.0" allows LAN access)
   http_port                  Web server TCP port
   save_effective             On startup, write the resolved config to config.effective.json
+  benchmark_diff             Run a local stratum server at this fixed share difficulty and mine against it - no pool, no wallet. 0 = off. The CLI form is --benchmark [difficulty]
   benchmark_job_interval_ms  How long --benchmark keeps one deterministic job, in ms. A persistent job makes fixed-difficulty share accounting honest for memory-hard kernels. CLI: --benchmark-job-interval
   log_table_interval         How often the 'log' output reprints the device/pool table, in ms. Separate from --interval, which is how often the engine PUBLISHES a snapshot (the web UI and metrics want that fast). 0 = print on every snapshot. CLI: --log-table-interval
   tui_interval               How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
+  cpu_metrics                Collect CPU telemetry (per-core clocks, temperatures, usage, CCD sensors). Set false on a GPU rig that does not want them, or where the reads need a privileged driver - GPU metrics are unaffected. CLI: --cpu-metrics 0
+  tui_width                  Console width in characters. 0 = use the terminal's own width and follow a resize, which is the default. Set it to pin the width - for a terminal that misreports, or output being captured with no tty to ask. CLI: --tui-width
+  tui_height                 Console height in rows. 0 = use the terminal's own height and follow a resize. Independent of tui_width, so pinning one still tracks the other. CLI: --tui-height
+  hashrate_window            Seconds the reported hashrate averages over. A GPU's hash counter advances one batch at a time, so an un-averaged rate reads 0, 0, 0, BURST, 0; this window is what makes it steady. Raise it for a calmer number on a bursty rig, lower it to see an intensity or thread change take effect sooner. Does not affect the 'avg' figure, which is always since start. CLI: --hashrate-window
+  disable_sse                Behave as if this CPU had no SSE4.1/AES/PCLMUL, nor anything built on them. For measuring a narrower path than the hardware has - here, the portable fallback. CLI: --disable_sse
+  disable_avx2               Behave as if there were no AVX/AVX2. VAES and AVX-512 go with it, since both need AVX: a CPU with AVX-512 and no AVX2 does not exist, and pretending otherwise would select a path you meant to exclude. This is the switch for measuring the AVX2 path most Zen3-and-older rigs actually run. CLI: --disable_avx2
+  disable_avx512             Behave as if there were no AVX-512. AMX goes with it, riding on the same register state. CLI: --disable_avx512
+  disable_vaes               Behave as if there were no VAES/VPCLMULQDQ. CLI: --disable_vaes
+  disable_amx                Behave as if there were no AMX. CLI: --disable_amx
+  disable_huge_pages         Allocate with ordinary pages rather than huge ones. Huge pages are meant to help - a large ring is far fewer TLB entries at 2 MB than at 4 KB - but on a working set that already fits the TLB they buy nothing while still needing privileges. This is how a rig owner finds out which case theirs is. CLI: --disable_huge_pages
   pool                       Active pool(s) from pools[]: an index (0 or "0"), an array ([0, 2] = multiple pools), or [] for monitoring mode. Omit = all pools (first primary, rest failover). CLI: --pool
+  cpu_threads                How many CPU threads mine. 0 = auto, which holds back one processor on a small machine and two above 8 threads, so the miner's own threads - and yours - are not competing with workers. Set it to the full thread count to mine on everything. CLI: --cpu_threads
+  cpu_affinity               Which processors mine, as a list: "0-7,16,18". Takes PRECEDENCE over cpu_threads, since it names the processors outright. Everything not listed is left for the miner's management threads. CLI: --cpu_affinity
   bandwidth_test             Measure each GPU's host<->device PCIe bandwidth once at startup and publish it (pcie.h2d / pcie.d2h). Costs ~1s per GPU; algorithms that stream results off the GPU use it as a hard ceiling. CLI: --bandwidth-test
   bandwidth_test_mb          Per-copy buffer size for that measurement, in MiB. Large enough to measure throughput rather than launch latency
-  pools[].url                Pool URL (CLI: -p / --url; stratum+ssl:// for TLS)
+  pools[].url                Pool URL (CLI: -p / --pool / --url; stratum+ssl:// for TLS). Repeat the flag for backups - the first is the primary and the rest are rotated through on disconnection
   pools[].wallet             Payout wallet address (CLI: -w / --wallet)
   pools[].worker             Worker / rig name; sent to the pool as wallet.worker (CLI: --worker)
   pools[].pass               Password (CLI: --pass; note -p is the POOL URL, as in bzminer 1.x)
   pools[].algo               Algorithm (CLI: -a / --algo)
   pools[].ssl_verify         stratum+ssl: verify the pool's TLS certificate chain + hostname (CLI: --ssl-verify)
+  pools[].user               LEGACY combined login, sent verbatim instead of wallet.worker. Only for a pool that wants something other than that shape - set wallet and worker instead (CLI: -u / --user)
   devices[].index            Device index - counts EVERY device enumerated, so disabling one does not renumber the others
-  devices[].intensity        Mining intensity (0 = auto)
+  devices[].intensity        Mining intensity: how much work one GPU launch is asked for, in units of 65536 nonces (1-4096). 0 = auto, which is 64. Higher keeps the card busy longer per launch; lower picks up a new job sooner. Shown as i<n> in the mining table's cfg column
   devices[].enabled          Whether to mine on this device. To turn off a whole vendor or the CPU instead, use device_types below
   device_types.nvidia        Mine on NVIDIA devices (CLI: --nvidia)
   device_types.amd           Mine on AMD devices (CLI: --amd)
@@ -745,8 +844,10 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
   "log": {
     // Log verbosity: trace, network, debug, info, warn, or error (network = raw pool traffic)
     "level": "info",
-    // Also write logs to this file (empty = console only)
-    "file": ""
+    // Write the log to this file instead of bzminer.worker.log. There is always a file log; this only changes its name/path
+    "file": "",
+    // Longest single field kept in a `network`-level wire log line, in characters. Stratum frames can carry very large opaque values - a Pearl share is a ~140 KB merkle proof - which bury the log; longer values are elided and a mostly-binary frame is summarized. 0 = no redaction. CLI: --log-wire-max
+    "wire_max": 512
   },
   "network": {
     // Pool / network socket timeout, in milliseconds
@@ -790,21 +891,47 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
   "http_port": 4014,
   // On startup, write the resolved config to config.effective.json
   "save_effective": false,
+  // Run a local stratum server at this fixed share difficulty and mine against it - no pool, no wallet. 0 = off. The CLI form is --benchmark [difficulty]
+  "benchmark_diff": 0,
   // How long --benchmark keeps one deterministic job, in ms. A persistent job makes fixed-difficulty share accounting honest for memory-hard kernels. CLI: --benchmark-job-interval
   "benchmark_job_interval_ms": 600000,
   // How often the 'log' output reprints the device/pool table, in ms. Separate from --interval, which is how often the engine PUBLISHES a snapshot (the web UI and metrics want that fast). 0 = print on every snapshot. CLI: --log-table-interval
   "log_table_interval": 30000,
   // How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
   "tui_interval": 400,
+  // Collect CPU telemetry (per-core clocks, temperatures, usage, CCD sensors). Set false on a GPU rig that does not want them, or where the reads need a privileged driver - GPU metrics are unaffected. CLI: --cpu-metrics 0
+  "cpu_metrics": true,
+  // Console width in characters. 0 = use the terminal's own width and follow a resize, which is the default. Set it to pin the width - for a terminal that misreports, or output being captured with no tty to ask. CLI: --tui-width
+  "tui_width": 0,
+  // Console height in rows. 0 = use the terminal's own height and follow a resize. Independent of tui_width, so pinning one still tracks the other. CLI: --tui-height
+  "tui_height": 0,
+  // Seconds the reported hashrate averages over. A GPU's hash counter advances one batch at a time, so an un-averaged rate reads 0, 0, 0, BURST, 0; this window is what makes it steady. Raise it for a calmer number on a bursty rig, lower it to see an intensity or thread change take effect sooner. Does not affect the 'avg' figure, which is always since start. CLI: --hashrate-window
+  "hashrate_window": 30,
+  // Behave as if this CPU had no SSE4.1/AES/PCLMUL, nor anything built on them. For measuring a narrower path than the hardware has - here, the portable fallback. CLI: --disable_sse
+  "disable_sse": false,
+  // Behave as if there were no AVX/AVX2. VAES and AVX-512 go with it, since both need AVX: a CPU with AVX-512 and no AVX2 does not exist, and pretending otherwise would select a path you meant to exclude. This is the switch for measuring the AVX2 path most Zen3-and-older rigs actually run. CLI: --disable_avx2
+  "disable_avx2": false,
+  // Behave as if there were no AVX-512. AMX goes with it, riding on the same register state. CLI: --disable_avx512
+  "disable_avx512": false,
+  // Behave as if there were no VAES/VPCLMULQDQ. CLI: --disable_vaes
+  "disable_vaes": false,
+  // Behave as if there were no AMX. CLI: --disable_amx
+  "disable_amx": false,
+  // Allocate with ordinary pages rather than huge ones. Huge pages are meant to help - a large ring is far fewer TLB entries at 2 MB than at 4 KB - but on a working set that already fits the TLB they buy nothing while still needing privileges. This is how a rig owner finds out which case theirs is. CLI: --disable_huge_pages
+  "disable_huge_pages": false,
   // Active pool(s) from pools[]: an index (0 or "0"), an array ([0, 2] = multiple pools), or [] for monitoring mode. Omit = all pools (first primary, rest failover). CLI: --pool
   "pool": [],
+  // How many CPU threads mine. 0 = auto, which holds back one processor on a small machine and two above 8 threads, so the miner's own threads - and yours - are not competing with workers. Set it to the full thread count to mine on everything. CLI: --cpu_threads
+  "cpu_threads": 0,
+  // Which processors mine, as a list: "0-7,16,18". Takes PRECEDENCE over cpu_threads, since it names the processors outright. Everything not listed is left for the miner's management threads. CLI: --cpu_affinity
+  "cpu_affinity": "",
   // Measure each GPU's host<->device PCIe bandwidth once at startup and publish it (pcie.h2d / pcie.d2h). Costs ~1s per GPU; algorithms that stream results off the GPU use it as a hard ceiling. CLI: --bandwidth-test
   "bandwidth_test": true,
   // Per-copy buffer size for that measurement, in MiB. Large enough to measure throughput rather than launch latency
   "bandwidth_test_mb": 64,
   "pools": [
     {
-      // Pool URL (CLI: -p / --url; stratum+ssl:// for TLS)
+      // Pool URL (CLI: -p / --pool / --url; stratum+ssl:// for TLS). Repeat the flag for backups - the first is the primary and the rest are rotated through on disconnection
       "url": "stratum+tcp://us.pearl.herominers.com:1200",
       // Payout wallet address (CLI: -w / --wallet)
       "wallet": "<your wallet address>",
@@ -815,14 +942,16 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
       // Algorithm (CLI: -a / --algo)
       "algo": "pearl",
       // stratum+ssl: verify the pool's TLS certificate chain + hostname (CLI: --ssl-verify)
-      "ssl_verify": false
+      "ssl_verify": false,
+      // LEGACY combined login, sent verbatim instead of wallet.worker. Only for a pool that wants something other than that shape - set wallet and worker instead (CLI: -u / --user)
+      "user": ""
     }
   ],
   "devices": [
     {
       // Device index - counts EVERY device enumerated, so disabling one does not renumber the others
       "index": 0,
-      // Mining intensity (0 = auto)
+      // Mining intensity: how much work one GPU launch is asked for, in units of 65536 nonces (1-4096). 0 = auto, which is 64. Higher keeps the card busy longer per launch; lower picks up a new job sooner. Shown as i<n> in the mining table's cfg column
       "intensity": 0,
       // Whether to mine on this device. To turn off a whole vendor or the CPU instead, use device_types below
       "enabled": true
@@ -865,13 +994,13 @@ that matter. These are the ones worth knowing.
 
 | variable | what it does |
 |---|---|
-| `BZ_CPU_THREADS=<n>` | Cap CPU mining workers. Default is every logical processor — on Windows that means all processor groups, not just the 64 in the one the process started in |
+| `BZ_CPU_THREADS=<n>` | Cap CPU mining workers, for scripts that would rather set an environment variable than pass `--cpu_threads`. It caps what the thread plan already chose, so it cannot exceed it |
 | `BZ_XELIS_THREADS=<n>` | The GPU thread budget for xelis. It is chosen from the device — 128 threads per compute unit on Ada and older (floor 8192, ceiling 16384), 256 per unit and no ceiling on Blackwell, which needs the larger launch. Setting this by hand is for tuning experiments |
 | `BZ_XELIS_BLOCK=32\|64\|128\|256` | The xelis CUDA launch block. Default 64, or 256 on a recognised GA100 mining card |
 | `BZ_XELIS_STREAMS=1\|2` | Force one launch slot, or force the two-slot schedule measured on GA100, onto another NVIDIA card. A/B testing knob |
 | `BZ_ZK_THREADS=<n>` | Worker cap for Pearl's ZK prover |
 | `BZ_NO_CPU=1`, `BZ_NO_CUDA=1`, `BZ_NO_OPENCL=1` | Skip a whole compute backend. Blunter than `--nvidia`/`--amd`/`--cpu`, and useful for isolating one device while benchmarking. `BZ_NO_OPENCL=1` also stops the OpenCL loader being opened at all |
-| `BZ_NO_MOUSE=1` | Do not ask the terminal for wheel events, so click-and-drag text selection keeps working. The keyboard still scrolls the log pane |
+| `BZ_MOUSE=1` | Use full mouse reporting instead of the default wheel handling. Adds click events, but the terminal loses click-and-drag text selection while it is on. The wheel already scrolls without it |
 | `BZ_WARTHOG_SHAVERUS=<H/s>` | Pin the candidate rate each Warthog GPU is asked for instead of letting the tuner find it. This is the modern equivalent of bzminer 1.x's `--warthog_verus_hr_target`, which maps onto it automatically |
 | `BZ_WARTHOG_SHA_QUALITY=<pct>` | Nudge Warthog's balance point without pinning it |
 | `BZ_WARTHOG_AFFINITY=auto\|group\|none\|pu` | How Warthog's verus workers are pinned to cores |
