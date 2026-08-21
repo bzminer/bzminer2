@@ -634,6 +634,8 @@ Run modes:
   --gpu-info              Print NVIDIA GPU (CUDA) devices, then exit
   --ram-info              Print memory modules + SMBus temp diagnostic, then exit
   --list-metrics          List every available metric (backends + per-device, incl. vendor), then exit
+  --list-columns          List every console-table column name (metrics / device_columns /
+                          mining_columns), incl. this rig's vendor keys, then exit
   --list-algos            Print this build's algorithms + dev fees as JSON, then exit
   --list-plugins          Print this build's plugins (static + dynamic) as JSON, then exit
   --build-info            Print version + whether release secrets were set; exit 3 if not
@@ -655,8 +657,14 @@ Run modes:
   --disable_avx512        ... no AVX-512, and no AMX with it
   --disable_vaes          ... no VAES/VPCLMULQDQ
   --disable_amx           ... no AMX
+  --no-bc250-gpu          AMD BC-250: leave the shader clock at its stock 1500 MHz
+  --no-bc250-cpu          AMD BC-250: leave 2 of the 8 CPU cores switched off
+  --bc250-gpu-clock <mhz> AMD BC-250: forced shader clock (default 1800)
   --disable_huge_pages    Allocate with ordinary pages, to measure what huge pages
                           are actually worth on this rig
+  --intensity <n>         GPU mining intensity for every device that does not set its
+                          own devices[].intensity (0 = auto). Units of 65536 nonces
+                          per launch; shown as i<n> in the mining table's cfg column
   --cpu_threads <n>       How many CPU threads mine (0 = auto, which leaves one or
                           two for everything else so the machine stays usable)
   --cpu_affinity <list>   Which processors mine: 0-7,16,18. Takes precedence over
@@ -679,6 +687,16 @@ Display:
                           'pcie', 'clocks', 'powers', 'volts', 'currents',
                           'utilization', 'counters', 'performance', 'memory', 'timings', 'all'.
                           '--metrics ?' lists every group and live metric.
+  --device-columns <list> Columns on the mining screen's DEVICE table (same vocabulary as
+                          --metrics; default free,total,core,mem,fan,power,temp)
+  --mining-columns <list> Columns on the MINING table: id, name, cfg, shares, accepted,
+                          rejected, pending, stale, errors, eff, poolhr, hr, avghr, power, temp,
+                          fan, core, mem, status (default id,cfg,shares,eff,poolhr,hr,status)
+  --list-columns          List every column name the three tables accept here, then exit
+  --unlock-bc250-cu       AMD BC-250: enable all 40 CUs (24 by default), then exit.
+                          Needs root, and an amdgpu module reload afterwards -
+                          the command explains exactly what to do.
+  --restore-bc250-cu      AMD BC-250: put the factory 24 CUs back, then exit
   --color / --no-color    Force ANSI color on/off (default: auto-detect a terminal)
 
 Devices:
@@ -744,6 +762,10 @@ Configuration:
   --plugin-manifest <url> Override the plugin manifest URL (beta channel / testing)
   --pool <index|[0,2]>    ...or, given a number instead of a URL, which configured
                           pool(s) to activate; [] = monitoring mode
+  --force_algo <algos>    Override the pools' algorithms, whatever wrote them: one
+                          name for pool 0, or a comma-separated list for one pool
+                          each. Also a top-level config.txt option, which is where a
+                          mining OS whose UI lacks the algorithm wants it
   --cu-kernel [algo=]<f>  Override with an offline-compiled CUDA .cubin
   --cl-kernel [algo=]<f>  Override with an OpenCL .spv or native .bin
                           (source/PTX overrides are not accepted)
@@ -774,6 +796,9 @@ Settings (set in config.txt, or with --set <path>=<value>):
   benchmark_job_interval_ms  How long --benchmark keeps one deterministic job, in ms. A persistent job makes fixed-difficulty share accounting honest for memory-hard kernels. CLI: --benchmark-job-interval
   log_table_interval         How often the 'log' output reprints the device/pool table, in ms. Separate from --interval, which is how often the engine PUBLISHES a snapshot (the web UI and metrics want that fast). 0 = print on every snapshot. CLI: --log-table-interval
   tui_interval               How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
+  metrics                    Columns on the MONITORING sensor table (--dmon, and the monitoring screen of the tui/log outputs). Comma- or space-separated. Takes single columns (memused, memfree, memtotal, util, memutil, core, mem, temp, memtemp, hotspot, power, fan), sensor GROUPS that expand to everything present (temps, clocks, powers, fans, volts, currents, pcie, memory, utilization, performance, all), and any vendor metric key this rig's backends emit (pcie.tx, temp.vr_core, ...). Empty = memused,memfree,util,memutil,core,mem,temp,memtemp,hotspot. Run 'bzminer --list-columns' for every name available on THIS machine. CLI: --metrics
+  device_columns             Columns on the mining screen's DEVICE table (the hardware box above the algorithm box). Same vocabulary as metrics above. Empty = memfree,memtotal,core,mem,fan,power,temp. Run 'bzminer --list-columns' for the full list. CLI: --device-columns
+  mining_columns             Columns on the MINING table (the algorithm box: shares, hashrate, pool). Its own vocabulary - id, name, cfg, shares, accepted, rejected, pending, stale, errors, eff, poolhr, hr, avghr, power, temp, fan, core, mem, status. Empty = id,cfg,shares,eff,poolhr,hr,status. Drop 'status' and the per-device status text, the pool difficulty and the latency rows go with it - they have nowhere to sit. Run 'bzminer --list-columns' for the full list. CLI: --mining-columns
   cpu_metrics                Collect CPU telemetry (per-core clocks, temperatures, usage, CCD sensors). Set false on a GPU rig that does not want them, or where the reads need a privileged driver - GPU metrics are unaffected. CLI: --cpu-metrics 0
   tui_width                  Console width in characters. 0 = use the terminal's own width and follow a resize, which is the default. Set it to pin the width - for a terminal that misreports, or output being captured with no tty to ask. CLI: --tui-width
   tui_height                 Console height in rows. 0 = use the terminal's own height and follow a resize. Independent of tui_width, so pinning one still tracks the other. CLI: --tui-height
@@ -783,8 +808,11 @@ Settings (set in config.txt, or with --set <path>=<value>):
   disable_avx512             Behave as if there were no AVX-512. AMX goes with it, riding on the same register state. CLI: --disable_avx512
   disable_vaes               Behave as if there were no VAES/VPCLMULQDQ. CLI: --disable_vaes
   disable_amx                Behave as if there were no AMX. CLI: --disable_amx
+  bc250                      AMD BC-250 only; ignored on every other machine. The board ships deliberately cut down - the shader array locked to 1500 MHz, and 2 of its 8 CPU cores switched off - and neither is a fuse, so both are undone at startup. `gpu` forces the shader clock: measured on a BC-250, warthog's sha side gains 32% and its janus score 12%, while xelis gains nothing, being bound by memory rather than compute. `cpu` enables all 8 cores and takes effect on the NEXT boot, the core mask being read when the OS enumerates CPUs. Both are volatile - a cold power cycle restores the factory setup. CLI: --no-bc250-gpu / --no-bc250-cpu / --bc250-gpu-clock
   disable_huge_pages         Allocate with ordinary pages rather than huge ones. Huge pages are meant to help - a large ring is far fewer TLB entries at 2 MB than at 4 KB - but on a working set that already fits the TLB they buy nothing while still needing privileges. This is how a rig owner finds out which case theirs is. CLI: --disable_huge_pages
   pool                       Active pool(s) from pools[]: an index (0 or "0"), an array ([0, 2] = multiple pools), or [] for monitoring mode. Omit = all pools (first primary, rest failover). CLI: --pool
+  force_algo                 Override the algorithm on the configured pools, whatever wrote them. One algorithm ("warthog") sets pool 0; a list sets one pool each, in order - either JSON (["warthog", "xelis"]) or comma separated ("warthog,xelis"). It is TOP-LEVEL, not a field inside pools[], because a mining OS rewrites the pool block from its own algorithm list - so an algorithm bzminer gained after that front-end shipped cannot be selected in its UI, and an override placed inside pools[] would be overwritten by it. CLI: --force_algo
+  intensity                  Mining intensity for every GPU that does not name its own in devices[]: how much work one launch is asked for, in units of 65536 nonces (1-4096). 0 = auto, which lets the algorithm choose. devices[].intensity is addressed by enumeration index and still wins where it is set, so this is the one to use for a whole rig. Shown as i<n> in the mining table's cfg column. CLI: --intensity
   cpu_threads                How many CPU threads mine. 0 = auto, which holds back one processor on a small machine and two above 8 threads, so the miner's own threads - and yours - are not competing with workers. Set it to the full thread count to mine on everything. CLI: --cpu_threads
   cpu_affinity               Which processors mine, as a list: "0-7,16,18". Takes PRECEDENCE over cpu_threads, since it names the processors outright. Everything not listed is left for the miner's management threads. CLI: --cpu_affinity
   bandwidth_test             Measure each GPU's host<->device PCIe bandwidth once at startup and publish it (pcie.h2d / pcie.d2h). Costs ~1s per GPU; algorithms that stream results off the GPU use it as a hard ceiling. CLI: --bandwidth-test
@@ -899,6 +927,12 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
   "log_table_interval": 30000,
   // How often the 'tui' dashboard redraws, in ms. A keypress redraws immediately regardless. CLI: --tui-interval
   "tui_interval": 400,
+  // Columns on the MONITORING sensor table (--dmon, and the monitoring screen of the tui/log outputs). Comma- or space-separated. Takes single columns (memused, memfree, memtotal, util, memutil, core, mem, temp, memtemp, hotspot, power, fan), sensor GROUPS that expand to everything present (temps, clocks, powers, fans, volts, currents, pcie, memory, utilization, performance, all), and any vendor metric key this rig's backends emit (pcie.tx, temp.vr_core, ...). Empty = memused,memfree,util,memutil,core,mem,temp,memtemp,hotspot. Run 'bzminer --list-columns' for every name available on THIS machine. CLI: --metrics
+  "metrics": "",
+  // Columns on the mining screen's DEVICE table (the hardware box above the algorithm box). Same vocabulary as metrics above. Empty = memfree,memtotal,core,mem,fan,power,temp. Run 'bzminer --list-columns' for the full list. CLI: --device-columns
+  "device_columns": "",
+  // Columns on the MINING table (the algorithm box: shares, hashrate, pool). Its own vocabulary - id, name, cfg, shares, accepted, rejected, pending, stale, errors, eff, poolhr, hr, avghr, power, temp, fan, core, mem, status. Empty = id,cfg,shares,eff,poolhr,hr,status. Drop 'status' and the per-device status text, the pool difficulty and the latency rows go with it - they have nowhere to sit. Run 'bzminer --list-columns' for the full list. CLI: --mining-columns
+  "mining_columns": "",
   // Collect CPU telemetry (per-core clocks, temperatures, usage, CCD sensors). Set false on a GPU rig that does not want them, or where the reads need a privileged driver - GPU metrics are unaffected. CLI: --cpu-metrics 0
   "cpu_metrics": true,
   // Console width in characters. 0 = use the terminal's own width and follow a resize, which is the default. Set it to pin the width - for a terminal that misreports, or output being captured with no tty to ask. CLI: --tui-width
@@ -917,10 +951,16 @@ fresh install does not start hashing to a placeholder wallet. Put your wallet in
   "disable_vaes": false,
   // Behave as if there were no AMX. CLI: --disable_amx
   "disable_amx": false,
+  // AMD BC-250 only; ignored on every other machine. The board ships deliberately cut down - the shader array locked to 1500 MHz, and 2 of its 8 CPU cores switched off - and neither is a fuse, so both are undone at startup. `gpu` forces the shader clock: measured on a BC-250, warthog's sha side gains 32% and its janus score 12%, while xelis gains nothing, being bound by memory rather than compute. `cpu` enables all 8 cores and takes effect on the NEXT boot, the core mask being read when the OS enumerates CPUs. Both are volatile - a cold power cycle restores the factory setup. CLI: --no-bc250-gpu / --no-bc250-cpu / --bc250-gpu-clock
+  "bc250": {"gpu": true, "cpu": true, "gpu_mhz": 1800, "gpu_mv": 0},
   // Allocate with ordinary pages rather than huge ones. Huge pages are meant to help - a large ring is far fewer TLB entries at 2 MB than at 4 KB - but on a working set that already fits the TLB they buy nothing while still needing privileges. This is how a rig owner finds out which case theirs is. CLI: --disable_huge_pages
   "disable_huge_pages": false,
   // Active pool(s) from pools[]: an index (0 or "0"), an array ([0, 2] = multiple pools), or [] for monitoring mode. Omit = all pools (first primary, rest failover). CLI: --pool
   "pool": [],
+  // Override the algorithm on the configured pools, whatever wrote them. One algorithm ("warthog") sets pool 0; a list sets one pool each, in order - either JSON (["warthog", "xelis"]) or comma separated ("warthog,xelis"). It is TOP-LEVEL, not a field inside pools[], because a mining OS rewrites the pool block from its own algorithm list - so an algorithm bzminer gained after that front-end shipped cannot be selected in its UI, and an override placed inside pools[] would be overwritten by it. CLI: --force_algo
+  "force_algo": "",
+  // Mining intensity for every GPU that does not name its own in devices[]: how much work one launch is asked for, in units of 65536 nonces (1-4096). 0 = auto, which lets the algorithm choose. devices[].intensity is addressed by enumeration index and still wins where it is set, so this is the one to use for a whole rig. Shown as i<n> in the mining table's cfg column. CLI: --intensity
+  "intensity": 0,
   // How many CPU threads mine. 0 = auto, which holds back one processor on a small machine and two above 8 threads, so the miner's own threads - and yours - are not competing with workers. Set it to the full thread count to mine on everything. CLI: --cpu_threads
   "cpu_threads": 0,
   // Which processors mine, as a list: "0-7,16,18". Takes PRECEDENCE over cpu_threads, since it names the processors outright. Everything not listed is left for the miner's management threads. CLI: --cpu_affinity
